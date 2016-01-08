@@ -10,10 +10,10 @@ from pip.commands.install import InstallCommand
 from pip.exceptions import (PreviousBuildDirError, InvalidWheelFilename,
                             InstallationError, UnsupportedWheel, HashErrors)
 from pip.download import path_to_url, PipSession
-from pip.index import PackageFinder
+from pip.index import PackageFinder, Link
 from pip.req import (InstallRequirement, RequirementSet, Requirements)
 from pip.req.req_file import process_line
-from pip.req.req_install import parse_editable
+from pip.req.req_install import parse_req
 from pip.utils import read_text_file
 from pip._vendor import pkg_resources
 from tests.lib import assert_raises_regexp, requirements_file
@@ -503,42 +503,46 @@ def test_requirements_data_structure_implements__contains__():
 @patch('pip.req.req_install.os.getcwd')
 @patch('pip.req.req_install.os.path.exists')
 @patch('pip.req.req_install.os.path.isdir')
+@patch('pip.req.req_install.is_installable_dir')
 def test_parse_editable_local(
-        isdir_mock, exists_mock, getcwd_mock, normcase_mock):
+        isdir_mock, exists_mock, getcwd_mock, normcase_mock,
+        is_installable_dir_mock):
     exists_mock.return_value = isdir_mock.return_value = True
+    is_installable_dir_mock.return_value = True
+
     # mocks needed to support path operations on windows tests
     normcase_mock.return_value = getcwd_mock.return_value = "/some/path"
-    assert parse_editable('.', 'git') == (None, 'file:///some/path', None, {})
-    normcase_mock.return_value = "/some/path/foo"
-    assert parse_editable('foo', 'git') == (
-        None, 'file:///some/path/foo', None, {},
-    )
+    assert parse_req('.', True, 'git') == (None, Link('file:///some/path'),
+                                           None, None)
+    assert parse_req('./foo', True, 'git') == (None,
+                                               Link('file:///some/path/foo'),
+                                               None, None)
 
 
 def test_parse_editable_default_vcs():
-    assert parse_editable('https://foo#egg=foo', 'git') == (
+    assert parse_req('https://foo#egg=foo', True, 'git') == (
         'foo',
-        'git+https://foo#egg=foo',
+        Link('git+https://foo#egg=foo'),
         None,
-        {'egg': 'foo'},
+        None,
     )
 
 
 def test_parse_editable_explicit_vcs():
-    assert parse_editable('svn+https://foo#egg=foo', 'git') == (
+    assert parse_req('svn+https://foo#egg=foo', True, 'git') == (
         'foo',
-        'svn+https://foo#egg=foo',
+        Link('svn+https://foo#egg=foo'),
         None,
-        {'egg': 'foo'},
+        None,
     )
 
 
 def test_parse_editable_vcs_extras():
-    assert parse_editable('svn+https://foo#egg=foo[extras]', 'git') == (
+    assert parse_req('svn+https://foo#egg=foo[extras]', 'git') == (
         'foo[extras]',
-        'svn+https://foo#egg=foo[extras]',
+        Link('svn+https://foo#egg=foo[extras]'),
         None,
-        {'egg': 'foo[extras]'},
+        None,
     )
 
 
@@ -546,16 +550,19 @@ def test_parse_editable_vcs_extras():
 @patch('pip.req.req_install.os.getcwd')
 @patch('pip.req.req_install.os.path.exists')
 @patch('pip.req.req_install.os.path.isdir')
+@patch('pip.req.req_install.is_installable_dir')
 def test_parse_editable_local_extras(
-        isdir_mock, exists_mock, getcwd_mock, normcase_mock):
+        isdir_mock, exists_mock, getcwd_mock, normcase_mock,
+        installable_dir_mock):
     exists_mock.return_value = isdir_mock.return_value = True
     normcase_mock.return_value = getcwd_mock.return_value = "/some/path"
-    assert parse_editable('.[extras]', 'git') == (
-        None, 'file://' + "/some/path", ('extras',), {},
+    installable_dir_mock.return_value = True
+    assert parse_req('.[extras]', True, 'git') == (
+        None, Link('file://' + "/some/path"), "[extras]", None,
     )
-    normcase_mock.return_value = "/some/path/foo"
-    assert parse_editable('foo[bar,baz]', 'git') == (
-        None, 'file:///some/path/foo', ('bar', 'baz'), {},
+    normcase_mock.return_value = "/some/path"
+    assert parse_req('./foo[bar,baz]', True, 'git') == (
+        None, Link('file:///some/path/foo'), "[bar,baz]", None,
     )
 
 

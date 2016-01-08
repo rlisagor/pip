@@ -64,8 +64,8 @@ def _strip_extras(path):
 class InstallRequirement(object):
 
     def __init__(self, req, comes_from, source_dir=None, editable=False,
-                 link=None, as_egg=False, update=True, editable_options=None,
-                 pycompile=True, markers=None, isolated=False, options=None,
+                 link=None, as_egg=False, update=True, pycompile=True,
+                 markers=None, isolated=False, options=None,
                  wheel_cache=None, constraint=False):
         self.extras = ()
         if isinstance(req, six.string_types):
@@ -88,10 +88,6 @@ class InstallRequirement(object):
         self.source_dir = source_dir
         self.editable = editable
 
-        if editable_options is None:
-            editable_options = {}
-
-        self.editable_options = editable_options
         self._wheel_cache = wheel_cache
         self.link = self.original_link = link
         self.as_egg = as_egg
@@ -127,110 +123,28 @@ class InstallRequirement(object):
     def from_editable(cls, editable_req, comes_from=None, default_vcs=None,
                       isolated=False, options=None, wheel_cache=None,
                       constraint=False):
-        from pip.index import Link
 
-        name, url, extras_override, editable_options = parse_editable(
-            editable_req, default_vcs)
-        if url.startswith('file:'):
-            source_dir = url_to_path(url)
-        else:
-            source_dir = None
-
-        res = cls(name, comes_from, source_dir=source_dir,
-                  editable=True,
-                  link=Link(url),
-                  constraint=constraint,
-                  editable_options=editable_options,
-                  isolated=isolated,
-                  options=options if options else {},
-                  wheel_cache=wheel_cache)
-
-        if extras_override is not None:
-            res.extras = extras_override
-
-        return res
+        return cls.from_line(name=editable_req, comes_from=comes_from,
+                             isolated=isolated, options=options,
+                             wheel_cache=wheel_cache, constraint=constraint,
+                             editable=True, default_vcs=default_vcs)
 
     @classmethod
-    def from_line(
-            cls, name, comes_from=None, isolated=False, options=None,
-            wheel_cache=None, constraint=False):
+    def from_line(cls, name, comes_from=None, isolated=False, options=None,
+                  wheel_cache=None, constraint=False, editable=False,
+                  default_vcs=None):
         """Creates an InstallRequirement from a name, which might be a
         requirement, directory containing 'setup.py', filename, or URL.
         """
-        from pip.index import Link
-
-        if is_url(name):
-            marker_sep = '; '
-        else:
-            marker_sep = ';'
-        if marker_sep in name:
-            name, markers = name.split(marker_sep, 1)
-            markers = markers.strip()
-            if not markers:
-                markers = None
-        else:
-            markers = None
-        name = name.strip()
-        req = None
-        path = os.path.normpath(os.path.abspath(name))
-        link = None
-        extras = None
-
-        if is_url(name):
-            link = Link(name)
-        else:
-            p, extras = _strip_extras(path)
-            if (os.path.isdir(p) and
-                    (os.path.sep in name or name.startswith('.'))):
-
-                if not is_installable_dir(p):
-                    raise InstallationError(
-                        "Directory %r is not installable. File 'setup.py' "
-                        "not found." % name
-                    )
-                link = Link(path_to_url(p))
-            elif is_archive_file(p):
-                if not os.path.isfile(p):
-                    logger.warning(
-                        'Requirement %r looks like a filename, but the '
-                        'file does not exist',
-                        name
-                    )
-                link = Link(path_to_url(p))
-
-        # it's a local file, dir, or url
-        if link:
-            # Handle relative file URLs
-            if link.scheme == 'file' and re.search(r'\.\./', link.url):
-                link = Link(
-                    path_to_url(os.path.normpath(os.path.abspath(link.path))))
-            # wheel file
-            if link.is_wheel:
-                wheel = Wheel(link.filename)  # can raise InvalidWheelFilename
-                if not wheel.supported():
-                    raise UnsupportedWheel(
-                        "%s is not a supported wheel on this platform." %
-                        wheel.filename
-                    )
-                req = "%s==%s" % (wheel.name, wheel.version)
-            else:
-                # set the req to the egg fragment.  when it's not there, this
-                # will become an 'unnamed' requirement
-                req = link.egg_fragment
-
-        # a requirement specifier
-        else:
-            req = name
-
         options = options if options else {}
+        req, link, extras, markers = parse_req(name,  editable, default_vcs)
         res = cls(req, comes_from, link=link, markers=markers,
                   isolated=isolated, options=options,
-                  wheel_cache=wheel_cache, constraint=constraint)
-
+                  wheel_cache=wheel_cache, constraint=constraint,
+                  editable=editable)
         if extras:
             res.extras = pkg_resources.Requirement.parse('__placeholder__' +
                                                          extras).extras
-
         return res
 
     def __str__(self):
@@ -288,6 +202,16 @@ class InstallRequirement(object):
         specifiers = self.specifier
         return (len(specifiers) == 1 and
                 next(iter(specifiers)).operator in ('==', '==='))
+
+    @property
+    def source_pkg_dir(self):
+        if not self.source_dir:
+            return None
+        if self.link and 'subdirectory' in self.link.fragments:
+            return os.path.join(self.source_dir,
+                                self.link.fragments['subdirectory'][0])
+        else:
+            return self.source_dir
 
     def from_path(self):
         if self.req is None:
@@ -379,14 +303,7 @@ class InstallRequirement(object):
             )
 
         setup_file = 'setup.py'
-
-        if self.editable_options and 'subdirectory' in self.editable_options:
-            setup_py = os.path.join(self.source_dir,
-                                    self.editable_options['subdirectory'],
-                                    setup_file)
-
-        else:
-            setup_py = os.path.join(self.source_dir, setup_file)
+        setup_py = os.path.join(self.source_pkg_dir, setup_file)
 
         # Python2 __file__ should not be unicode
         if six.PY2 and isinstance(setup_py, six.text_type):
@@ -419,16 +336,12 @@ class InstallRequirement(object):
             if self.editable:
                 egg_base_option = []
             else:
-                egg_info_dir = os.path.join(self.source_dir, 'pip-egg-info')
+                egg_info_dir = os.path.join(self.source_pkg_dir, 'pip-egg-info')
                 ensure_dir(egg_info_dir)
                 egg_base_option = ['--egg-base', 'pip-egg-info']
-            cwd = self.source_dir
-            if self.editable_options and \
-                    'subdirectory' in self.editable_options:
-                cwd = os.path.join(cwd, self.editable_options['subdirectory'])
             call_subprocess(
                 egg_info_cmd + egg_base_option,
-                cwd=cwd,
+                cwd=self.source_pkg_dir,
                 show_stdout=False,
                 command_level=logging.DEBUG,
                 command_desc='python setup.py egg_info')
@@ -471,9 +384,9 @@ class InstallRequirement(object):
     def egg_info_path(self, filename):
         if self._egg_info_path is None:
             if self.editable:
-                base = self.source_dir
+                base = self.source_pkg_dir
             else:
-                base = os.path.join(self.source_dir, 'pip-egg-info')
+                base = os.path.join(self.source_pkg_dir, 'pip-egg-info')
             filenames = os.listdir(base)
             if self.editable:
                 filenames = []
@@ -572,8 +485,7 @@ class InstallRequirement(object):
         assert '+' in self.link.url, "bad url: %r" % self.link.url
         if not self.update:
             return
-        vc_type, url = self.link.url.split('+', 1)
-        backend = vcs.get_backend(vc_type)
+        backend = vcs.get_backend_by_scheme(self.link.scheme)
         if backend:
             vcs_backend = backend(self.link.url)
             if obtain:
@@ -583,7 +495,7 @@ class InstallRequirement(object):
         else:
             assert 0, (
                 'Unexpected version control type (in %s): %s'
-                % (self.link, vc_type))
+                % (self.link, self.link.scheme))
 
     def uninstall(self, auto_confirm=False):
         """
@@ -919,7 +831,10 @@ class InstallRequirement(object):
         :return: self.source_dir
         """
         if self.source_dir is None:
-            self.source_dir = self.build_location(parent_dir)
+            if self.editable and self.link.scheme == 'file':
+                self.source_dir = url_to_path(self.link.url)
+            else:
+                self.source_dir = self.build_location(parent_dir)
         return self.source_dir
 
     def remove_temporary_source(self):
@@ -947,10 +862,6 @@ class InstallRequirement(object):
 
         with indent_log():
             # FIXME: should we do --install-headers here too?
-            cwd = self.source_dir
-            if self.editable_options and \
-                    'subdirectory' in self.editable_options:
-                cwd = os.path.join(cwd, self.editable_options['subdirectory'])
             call_subprocess(
                 [
                     sys.executable,
@@ -961,7 +872,7 @@ class InstallRequirement(object):
                 ['develop', '--no-deps'] +
                 list(install_options),
 
-                cwd=cwd,
+                cwd=self.source_pkg_dir,
                 show_stdout=False)
 
         self.install_succeeded = True
@@ -1077,111 +988,107 @@ def _build_req_from_url(url):
     return req
 
 
-def _build_editable_options(req):
-
-    """
-        This method generates a dictionary of the query string
-        parameters contained in a given editable URL.
-    """
-    regexp = re.compile(r"[\?#&](?P<name>[^&=]+)=(?P<value>[^&=]+)")
-    matched = regexp.findall(req)
-
-    if matched:
-        ret = dict()
-        for option in matched:
-            (name, value) = option
-            if name in ret:
-                raise Exception("%s option already defined" % name)
-            ret[name] = value
-        return ret
-    return None
-
-
-def parse_editable(editable_req, default_vcs=None):
-    """Parses an editable requirement into:
+def parse_req(name, editable=False, default_vcs=None):
+    """Parses a requirement into:
         - a requirement name
-        - an URL
+        - a Link object
         - extras
-        - editable options
-    Accepted requirements:
-        svn+http://blahblah@rev#egg=Foobar[baz]&subdirectory=version_subdir
-        .[some_extra]
+        - markers
     """
 
     from pip.index import Link
 
-    url = editable_req
+    if is_url(name):
+        marker_sep = '; '
+    else:
+        marker_sep = ';'
+    if marker_sep in name:
+        name, markers = name.split(marker_sep, 1)
+        markers = markers.strip()
+        if not markers:
+            markers = None
+    else:
+        markers = None
+    name = name.strip()
+    req = None
+    path = os.path.normpath(os.path.abspath(name))
+    link = None
     extras = None
 
-    # If a file path is specified with extras, strip off the extras.
-    m = re.match(r'^(.+)(\[[^\]]+\])$', url)
-    if m:
-        url_no_extras = m.group(1)
-        extras = m.group(2)
+    not_editable_error = InstallationError(
+        '%s should either be a path to a local project or a VCS url '
+        'beginning with svn+, git+, hg+, or bzr+' %
+        name
+    )
+
+    if is_url(name):
+        for version_control in vcs:
+            if name.lower().startswith('%s:' % version_control):
+                name = '%s+%s' % (version_control, name)
+                break
+
+        if editable and '+' not in name and not name.startswith('file:'):
+            if default_vcs:
+                name = default_vcs + '+' + name
+            else:
+                raise not_editable_error
+
+        link = Link(name)
     else:
-        url_no_extras = url
+        p, extras = _strip_extras(path)
+        if (os.path.isdir(p) and
+                (os.path.sep in name or name.startswith('.'))):
 
-    if os.path.isdir(url_no_extras):
-        if not os.path.exists(os.path.join(url_no_extras, 'setup.py')):
-            raise InstallationError(
-                "Directory %r is not installable. File 'setup.py' not found." %
-                url_no_extras
-            )
-        # Treating it as code that has already been checked out
-        url_no_extras = path_to_url(url_no_extras)
+            if not is_installable_dir(p):
+                raise InstallationError(
+                    "Directory %r is not installable. File 'setup.py' "
+                    "not found." % name
+                )
+            link = Link(path_to_url(p))
+        elif editable:
+            raise not_editable_error
+        elif is_archive_file(p):
+            if not os.path.isfile(p):
+                logger.warning(
+                    'Requirement %r looks like a filename, but the '
+                    'file does not exist',
+                    name
+                )
+            link = Link(path_to_url(p))
 
-    if url_no_extras.lower().startswith('file:'):
-        package_name = Link(url_no_extras).egg_fragment
-        if extras:
-            return (
-                package_name,
-                url_no_extras,
-                pkg_resources.Requirement.parse(
-                    '__placeholder__' + extras
-                ).extras,
-                {},
-            )
+    # it's a local file, dir, or url
+    if link:
+        # Handle relative file URLs
+        if link.scheme == 'file' and re.search(r'\.\./', link.url):
+            link = Link(
+                path_to_url(os.path.normpath(os.path.abspath(link.path))))
+        # wheel file
+        if link.is_wheel:
+            wheel = Wheel(link.filename)  # can raise InvalidWheelFilename
+            if not wheel.supported():
+                raise UnsupportedWheel(
+                    "%s is not a supported wheel on this platform." %
+                    wheel.filename
+                )
+            req = "%s==%s" % (wheel.name, wheel.version)
+        elif editable and link.scheme != 'file' and not link.egg_fragment:
+            # attempt to guess the package name from the VCS URL
+            req = _build_req_from_url(link.url)
+            if not req:
+                raise InstallationError(
+                    '--editable=%s is not the right format; it must have '
+                    '#egg=Package' % name
+                )
         else:
-            return package_name, url_no_extras, None, {}
+            # set the req to the egg fragment.  when it's not there, this
+            # will become an 'unnamed' requirement
+            req = link.egg_fragment
 
-    for version_control in vcs:
-        if url.lower().startswith('%s:' % version_control):
-            url = '%s+%s' % (version_control, url)
-            break
-
-    if '+' not in url:
-        if default_vcs:
-            url = default_vcs + '+' + url
-        else:
-            raise InstallationError(
-                '%s should either be a path to a local project or a VCS url '
-                'beginning with svn+, git+, hg+, or bzr+' %
-                editable_req
-            )
-
-    vc_type = url.split('+', 1)[0].lower()
-
-    if not vcs.get_backend(vc_type):
-        error_message = 'For --editable=%s only ' % editable_req + \
-            ', '.join([backend.name + '+URL' for backend in vcs.backends]) + \
-            ' is currently supported'
-        raise InstallationError(error_message)
-
-    try:
-        options = _build_editable_options(editable_req)
-    except Exception as exc:
-        raise InstallationError(
-            '--editable=%s error in editable options:%s' % (editable_req, exc)
-        )
-    if not options or 'egg' not in options:
-        req = _build_req_from_url(editable_req)
-        if not req:
-            raise InstallationError(
-                '--editable=%s is not the right format; it must have '
-                '#egg=Package' % editable_req
-            )
+    # a requirement specifier
     else:
-        req = options['egg']
+        req = name
 
-    package = _strip_postfix(req)
-    return package, url, None, options
+    if req:
+        req = _strip_postfix(req)
+
+    return req, link, extras, markers

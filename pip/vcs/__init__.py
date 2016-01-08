@@ -83,6 +83,11 @@ class VcsSupport(object):
         if name in self._registry:
             return self._registry[name]
 
+    def get_backend_by_scheme(self, scheme):
+        for backend in self.backends:
+            if scheme in backend.schemes:
+                return backend
+
     def get_backend_from_location(self, location):
         vc_type = self.get_backend_name(location)
         if vc_type:

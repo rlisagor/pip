@@ -25,7 +25,7 @@ class Bazaar(VersionControl):
     repo_name = 'branch'
     schemes = (
         'bzr', 'bzr+http', 'bzr+https', 'bzr+ssh', 'bzr+sftp', 'bzr+ftp',
-        'bzr+lp',
+        'bzr+lp', 'bzr+file',
     )
 
     def __init__(self, url=None, *args, **kwargs):

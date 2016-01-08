@@ -55,6 +55,10 @@ class TestLink(object):
     def test_ext_fragment(self):
         assert '.whl' == Link('http://yo/wheel.whl#frag').ext
 
+    def test_fragments(self):
+        assert {'a': ['b'], 'c': ['d']} == Link(
+                'http://yo/wheel.whl#a=b&c=d').fragments
+
     def test_ext_query(self):
         assert '.whl' == Link('http://yo/wheel.whl?a=b').ext
 

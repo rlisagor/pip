@@ -26,7 +26,7 @@ class Subversion(VersionControl):
     name = 'svn'
     dirname = '.svn'
     repo_name = 'checkout'
-    schemes = ('svn', 'svn+ssh', 'svn+http', 'svn+https', 'svn+svn')
+    schemes = ('svn', 'svn+ssh', 'svn+http', 'svn+https', 'svn+svn', 'svn+file')
 
     def get_info(self, location):
         """Returns (url, revision), where both are strings"""

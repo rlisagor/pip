@@ -944,14 +944,16 @@ class Link(object):
         scheme, netloc, path, query, fragment = urllib_parse.urlsplit(self.url)
         return urllib_parse.urlunsplit((scheme, netloc, path, query, None))
 
-    _egg_fragment_re = re.compile(r'#egg=([^&]*)')
+    @property
+    def fragments(self):
+        _, _, _, _, fragment = urllib_parse.urlsplit(self.url)
+        return urllib_parse.parse_qs(fragment)
 
     @property
     def egg_fragment(self):
-        match = self._egg_fragment_re.search(self.url)
-        if not match:
+        if 'egg' not in self.fragments:
             return None
-        return match.group(1)
+        return self.fragments['egg'][0]
 
     _hash_re = re.compile(
         r'(sha1|sha224|sha384|sha256|sha512|md5)=([a-f0-9]+)'

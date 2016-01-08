@@ -475,10 +475,10 @@ def unpack_vcs_link(link, location):
 
 
 def _get_used_vcs_backend(link):
-    for backend in vcs.backends:
-        if link.scheme in backend.schemes:
-            vcs_backend = backend(link.url)
-            return vcs_backend
+    backend = vcs.get_backend_by_scheme(link.scheme)
+    if not backend:
+        return None
+    return backend(link.url)
 
 
 def is_vcs_url(link):
