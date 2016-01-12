@@ -192,6 +192,20 @@ def test_install_local_editable_with_subdirectory(script):
 
 
 @pytest.mark.network
+def test_install_local_non_editable_with_subdirectory(script):
+    version_pkg_path = _create_test_package_with_subdirectory(script,
+                                                              'version_subdir')
+    result = script.pip(
+        'install',
+        '%s#egg=version_subpkg&subdirectory=version_subdir' %
+        ('git+file://%s' % version_pkg_path,)
+    )
+    assert 'Running setup.py install for version-subpkg' in result.stdout
+    assert 'installed version-subpkg' in result.stdout
+
+
+
+@pytest.mark.network
 def test_wheel_user_with_prefix_in_pydistutils_cfg(script, data, virtualenv):
     # Make sure wheel is available in the virtualenv
     script.pip('install', 'wheel')

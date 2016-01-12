@@ -64,7 +64,7 @@ def _strip_extras(path):
 class InstallRequirement(object):
 
     def __init__(self, req, comes_from, source_dir=None, editable=False,
-                 link=None, as_egg=False, update=True, editable_options=None,
+                 link=None, as_egg=False, update=True, vcs_options=None,
                  pycompile=True, markers=None, isolated=False, options=None,
                  wheel_cache=None, constraint=False):
         self.extras = ()
@@ -88,10 +88,10 @@ class InstallRequirement(object):
         self.source_dir = source_dir
         self.editable = editable
 
-        if editable_options is None:
-            editable_options = {}
+        if vcs_options is None:
+            vcs_options = {}
 
-        self.editable_options = editable_options
+        self.vcs_options = vcs_options
         self._wheel_cache = wheel_cache
         self.link = self.original_link = link
         self.as_egg = as_egg
@@ -129,7 +129,7 @@ class InstallRequirement(object):
                       constraint=False):
         from pip.index import Link
 
-        name, url, extras_override, editable_options = parse_editable(
+        name, url, extras_override, vcs_options = parse_editable(
             editable_req, default_vcs)
         if url.startswith('file:'):
             source_dir = url_to_path(url)
@@ -140,7 +140,7 @@ class InstallRequirement(object):
                   editable=True,
                   link=Link(url),
                   constraint=constraint,
-                  editable_options=editable_options,
+                  vcs_options=vcs_options,
                   isolated=isolated,
                   options=options if options else {},
                   wheel_cache=wheel_cache)
@@ -175,6 +175,7 @@ class InstallRequirement(object):
         path = os.path.normpath(os.path.abspath(name))
         link = None
         extras = None
+        vcs_options = None
 
         if is_url(name):
             link = Link(name)
@@ -217,6 +218,7 @@ class InstallRequirement(object):
                 # set the req to the egg fragment.  when it's not there, this
                 # will become an 'unnamed' requirement
                 req = link.egg_fragment
+                vcs_options = _build_vcs_options(link.url)
 
         # a requirement specifier
         else:
@@ -224,7 +226,7 @@ class InstallRequirement(object):
 
         options = options if options else {}
         res = cls(req, comes_from, link=link, markers=markers,
-                  isolated=isolated, options=options,
+                  isolated=isolated, options=options, vcs_options=vcs_options,
                   wheel_cache=wheel_cache, constraint=constraint)
 
         if extras:
@@ -363,6 +365,16 @@ class InstallRequirement(object):
         return native_str(self.req.project_name)
 
     @property
+    def source_pkg_dir(self):
+        if not self.source_dir:
+            return None
+        if self.vcs_options and 'subdirectory' in self.vcs_options:
+            return os.path.join(self.source_dir,
+                                self.vcs_options['subdirectory'])
+        else:
+            return self.source_dir
+
+    @property
     def setup_py(self):
         assert self.source_dir, "No source dir for %s" % self
         try:
@@ -379,14 +391,7 @@ class InstallRequirement(object):
             )
 
         setup_file = 'setup.py'
-
-        if self.editable_options and 'subdirectory' in self.editable_options:
-            setup_py = os.path.join(self.source_dir,
-                                    self.editable_options['subdirectory'],
-                                    setup_file)
-
-        else:
-            setup_py = os.path.join(self.source_dir, setup_file)
+        setup_py = os.path.join(self.source_pkg_dir, setup_file)
 
         # Python2 __file__ should not be unicode
         if six.PY2 and isinstance(setup_py, six.text_type):
@@ -419,16 +424,12 @@ class InstallRequirement(object):
             if self.editable:
                 egg_base_option = []
             else:
-                egg_info_dir = os.path.join(self.source_dir, 'pip-egg-info')
+                egg_info_dir = os.path.join(self.source_pkg_dir, 'pip-egg-info')
                 ensure_dir(egg_info_dir)
                 egg_base_option = ['--egg-base', 'pip-egg-info']
-            cwd = self.source_dir
-            if self.editable_options and \
-                    'subdirectory' in self.editable_options:
-                cwd = os.path.join(cwd, self.editable_options['subdirectory'])
             call_subprocess(
                 egg_info_cmd + egg_base_option,
-                cwd=cwd,
+                cwd=self.source_pkg_dir,
                 show_stdout=False,
                 command_level=logging.DEBUG,
                 command_desc='python setup.py egg_info')
@@ -473,7 +474,7 @@ class InstallRequirement(object):
             if self.editable:
                 base = self.source_dir
             else:
-                base = os.path.join(self.source_dir, 'pip-egg-info')
+                base = os.path.join(self.source_pkg_dir, 'pip-egg-info')
             filenames = os.listdir(base)
             if self.editable:
                 filenames = []
@@ -947,10 +948,6 @@ class InstallRequirement(object):
 
         with indent_log():
             # FIXME: should we do --install-headers here too?
-            cwd = self.source_dir
-            if self.editable_options and \
-                    'subdirectory' in self.editable_options:
-                cwd = os.path.join(cwd, self.editable_options['subdirectory'])
             call_subprocess(
                 [
                     sys.executable,
@@ -961,7 +958,7 @@ class InstallRequirement(object):
                 ['develop', '--no-deps'] +
                 list(install_options),
 
-                cwd=cwd,
+                cwd=self.source_pkg_dir,
                 show_stdout=False)
 
         self.install_succeeded = True
@@ -1077,25 +1074,29 @@ def _build_req_from_url(url):
     return req
 
 
-def _build_editable_options(req):
+def _build_vcs_options(req):
 
     """
         This method generates a dictionary of the query string
         parameters contained in a given editable URL.
     """
-    regexp = re.compile(r"[\?#&](?P<name>[^&=]+)=(?P<value>[^&=]+)")
-    matched = regexp.findall(req)
+    try:
+        regexp = re.compile(r"[\?#&](?P<name>[^&=]+)=(?P<value>[^&=]+)")
+        matched = regexp.findall(req)
 
-    if matched:
-        ret = dict()
-        for option in matched:
-            (name, value) = option
-            if name in ret:
-                raise Exception("%s option already defined" % name)
-            ret[name] = value
-        return ret
-    return None
-
+        if matched:
+            ret = dict()
+            for option in matched:
+                (name, value) = option
+                if name in ret:
+                    raise Exception("%s option already defined" % name)
+                ret[name] = value
+            return ret
+        return None
+    except Exception as exc:
+        raise InstallationError(
+            '%s: error in vcs url fragment options: %s' % (req, exc)
+        )
 
 def parse_editable(editable_req, default_vcs=None):
     """Parses an editable requirement into:
@@ -1167,12 +1168,8 @@ def parse_editable(editable_req, default_vcs=None):
             ' is currently supported'
         raise InstallationError(error_message)
 
-    try:
-        options = _build_editable_options(editable_req)
-    except Exception as exc:
-        raise InstallationError(
-            '--editable=%s error in editable options:%s' % (editable_req, exc)
-        )
+    options = _build_vcs_options(editable_req)
+
     if not options or 'egg' not in options:
         req = _build_req_from_url(editable_req)
         if not req:
